@@ -1,0 +1,30 @@
+name: nxp_bloc
+version: 0.0.1
+author: stable|kernel <jobs@stablekernel.com>
+
+environment:
+  sdk: ">=2.2.2 <3.0.0"
+
+dependencies:
+  yaml: any
+  bloc: ^0.14.1 # ^0.9.3
+  base32: ^1.1.1
+  bsdiff: ^0.1.0
+  uuid: ^2.0.4
+  image: 2.1.4
+  dio: ^2.0.18  # powerful Http client for Dart
+  mime: ^0.9.6+3
+  exif: any
+  flutter_simple_dependency_injection: any
+  email_validator: ^1.0.3
+
+  IO:
+    path: ../IO
+  common:
+    path: ../common
+  PatrolParser:
+    path: ../PatrolParser
+
+dev_dependencies:
+  test: ^1.0.0
+  build_runner: ^1.0.0

@@ -1,0 +1,1818 @@
+import 'dart:async';
+import 'dart:io';
+
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:fluttertoast/fluttertoast.dart';
+import 'package:nxp/di/injection.dart';
+import 'package:nxp_bloc/mediators/sketch/configs.dart';
+import "package:common/src/common.log.dart";
+import 'package:path/path.dart' as Path;
+
+final D   = (m) => debugPrint(m.toString());
+final log = Logger(name:"Activity", levels: LEVEL1, writer: D);
+
+
+final TShowToast ShowToast = ({
+   String msg, int toastLength, int gravity, int timeInSecForIos,
+   int normalBgColor, int errBgColor, int textColor, double fontSize, bool error = false, bool force = true}){
+   final tlen = toastLength == 1 ? Toast.LENGTH_SHORT : Toast.LENGTH_LONG;
+   final gindex = gravity == 1
+         ? ToastGravity.BOTTOM
+         : gravity == 2
+            ? ToastGravity.CENTER
+            : ToastGravity.TOP;
+   if (force)
+      Fluttertoast.cancel();
+   Fluttertoast.showToast(
+       msg: msg,
+       toastLength: tlen,
+       gravity: gindex,
+       timeInSecForIos: 1,
+       backgroundColor: error ? Color(errBgColor) : Color(normalBgColor),
+       textColor: Color(textColor),
+       fontSize: fontSize,
+   );
+};
+
+
+class StoreStat implements StoreStatInf{
+  @override DateTime accessed;
+  @override DateTime changed;
+  @override int mode;
+  @override DateTime modified;
+  @override int size;
+  StoreStat(FileStat stat){
+     accessed = stat.accessed;
+     changed = stat.changed;
+     mode = stat.mode;
+     modified = stat.modified;
+     size = stat.size;
+  }
+
+}
+
+class Store implements StoreInf{
+   static ConfigInf config = Injection.get<ConfigInf>();
+   @override String path;
+   @override String result;
+   Store(this.path){
+      print("init store path: ${getPath()}");
+   }
+
+   @override String getPath([String pth]) => Path.join(config.app.directory, pth ?? path);
+
+   @override Future<bool> existsAsync() {
+      return File(getPath()).exists();
+   }
+
+   @override bool existsSync() {
+      return File(getPath()).existsSync();
+   }
+
+   @override StoreInf open() {
+      return this;
+   }
+
+   @override Future<String> readAsync() {
+      final completer = Completer<String>();
+      final path = getPath();
+      File(path).readAsString().then((r){
+         print('read file:$path');
+         print(r);
+         result = r;
+         completer.complete(r);
+      });
+      return completer.future;
+   }
+
+   @override String readSync() {
+//      return File(getPath()).readAsStringSync();
+      throw Exception("method: `readSync` Not Implemented yet");
+   }
+   void recheck(String content){
+      readAsync().then((e){
+         print('recheck saved content: ${content.length}, ${e.length}');
+         if(content.length != e.length){
+            print('real content to be written: \n$e');
+         }
+      });
+   }
+   @override Future<StoreInf> writeAsync(String content) {
+      final completer = Completer<StoreInf>();
+      final path = getPath();
+      print('writeAsync file:$path');
+      print(content);
+      File(path).writeAsString(content).then((r){
+         print("write: $content");
+         completer.complete(this);
+         recheck(content);
+      });
+      return completer.future;
+   }
+
+   @override void writeSync(String content, [String msg]) {
+      final path = getPath();
+      print('[$msg] writeSync file:$path');
+      print(content);
+      final result = File(path).writeAsStringSync(content);
+      recheck(content);
+      return result;
+   }
+
+   @override void deleteSync(){
+      return File(getPath()).deleteSync();
+   }
+
+   @override StoreStatInf statSync(){
+      return StoreStat(File(getPath()).statSync());
+   }
+
+   @override Future<StoreStatInf> stat(){
+      final completer = Completer<StoreStatInf>();
+      File(getPath()).stat().then((result){
+         completer.complete(StoreStat(result));
+      });
+      return completer.future;
+   }
+
+   @override
+   Future<StoreInf> writeAsBytes(List<int> data){
+      final completer = Completer<StoreInf>();
+      File(getPath()).writeAsBytes(data).then((result){
+         completer.complete(this);
+      });
+      return completer.future;
+   }
+
+   @override List<int> readAsBytesSync(){
+      return File(getPath()).readAsBytesSync();
+   }
+
+   @override Future<List<int>> readAsBytes(){
+      final completer = Completer<List<int>>();
+      File(getPath()).readAsBytes().then(completer.complete);
+      return completer.future;
+   }
+
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+import 'dart:async';
+import 'package:common/common.dart';
+import 'package:http/http.dart';
+import 'package:dio/dio.dart' as Dio;
+import 'package:flutter_simple_dependency_injection/injector.dart';
+import 'package:common/src/common.log.dart' show LoggerSketch;
+
+
+abstract class AppConfigInf{
+   int history;
+   String clientid;
+   String clientsecret;
+   String directory;
+   AppConfigInf(this.directory);
+}
+
+abstract class DatabaseInf{
+   String host;
+   int port;
+   String databaseName;
+   String username;
+   String password;
+}
+
+abstract class AssetsInf {
+   String resized_path;
+   String basepath;
+   int size;
+}
+
+abstract class ConfigInf<P extends AppConfigInf, D, A extends AssetsInf> {
+   P app;
+   A assets;
+   D database;
+
+}
+
+
+typedef TLogWriter = void Function(Object o);
+
+typedef TShowToast = void Function({
+   String msg, int toastLength, int gravity, int timeInSecForIos,
+   int normalBgColor, int errBgColor, int textColor, double fontSize, bool error
+});
+
+
+abstract class NxpInjector {
+   Injector _injector;
+   ConfigInf configImpl;
+   LoggerSketch logImpl;
+   TShowToast toastImpl;
+   TLogWriter logWriterImpl;
+   StoreInf store;
+
+}
+
+abstract class CacheSketch{
+   DateTime time;
+   Dio.Response value;
+   bool get outdated;
+   void     set(Dio.Response v);
+   Dio.Response get();
+}
+
+abstract class QCacheSketch{
+   Map<String, CacheSketch> cache = {};
+   Dio.Response get(String key);
+   void     set(String key, Dio.Response vaue);
+   void     clearKeysContains(String key);
+}
+
+abstract class HttpSketch{
+   Map<String, String> query;
+   Uri request_uri;
+   String get base_url;
+
+   void Function(int statuscode) _onFailed  = (code) => null;
+   void Function()               _onSuccess = () => null;
+   void Function()          _onNetAvailable = () => null;
+   void Function()        _onNetUnavailable = () => null;
+   bool Function()               _onHttp    = () => true;
+
+   HttpSketch({String host, int port});
+
+   void onFailed(void cb(int statuscode)){
+      _onFailed = cb;
+   }
+
+   void onSuccess(void cb()){
+      _onSuccess = cb;
+   }
+
+   void onHttp(bool cb()){
+      _onHttp = cb;
+   }
+
+   void onNetworkAvailable(void cb()){
+      _onNetAvailable = cb;
+   }
+
+   void onNetworkUnavailable(void cb()){
+      _onNetUnavailable = cb;
+   }
+
+
+   Future<bool> testNetwork();
+
+   Future<Response> get(String pth, {
+      Map<String, String> headers, Map<String, dynamic> qparam, String contentType});
+
+   Future<Response> post(String pth, {
+      Map<String, String> headers, dynamic body, String contentType});
+
+   Future<Dio.Response> dioMultiPost(String pth, {
+      Map<String, String> headers,     Map<String, dynamic> data,
+      onReceive(int send, int total),  TwoDBytes binary_data,
+      int progressSteps = 75,          String contentType,     onSend(int send, int total)});
+
+   Future<Dio.Response> dioGet(String pth, {
+      Map<String, String> headers, Map<String, dynamic> qparam,
+      String contentType, bool isCached = false});
+
+   Future<Dio.Response> dioPost(String pth, {
+      Map<String, String> headers, dynamic body, String contentType});
+
+}
+
+abstract class StoreInf{
+   String    path;
+   StoreInf  open();
+   Future<StoreInf> writeAsync(String content);
+   void             writeSync (String content, [String msg]);
+   Future<StoreInf> writeAsBytes(List<int> data);
+   void             deleteSync();
+   Future<String>   readAsync();
+   String           readSync();
+   List<int>        readAsBytesSync();
+   Future<List<int>>readAsBytes();
+   Future<bool>     existsAsync();
+   bool             existsSync();
+   String           getPath([String pth]);
+   StoreStatInf     statSync();
+   Future<StoreStatInf> stat();
+
+   StoreInf(this.path);
+}
+
+
+
+abstract class StoreStatInf {
+   DateTime changed;
+   DateTime modified;
+   DateTime accessed;
+   int mode;
+   int size;
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+import 'dart:async';
+import 'dart:io';
+import 'dart:convert';
+import 'dart:math';
+
+import 'package:dio/dio.dart';
+import 'package:bloc/bloc.dart';
+import 'package:image/image.dart';
+import 'package:nxp_bloc/impl/services.dart';
+import 'package:nxp_bloc/mediators/controllers/app_bloc.dart';
+import 'package:nxp_bloc/mediators/controllers/ijdevice_bloc.dart';
+import 'package:nxp_bloc/mediators/controllers/ijoptions_bloc.dart';
+import 'package:nxp_bloc/mediators/controllers/user_bloc.dart';
+import 'package:nxp_bloc/mediators/models/image_model.dart';
+import 'package:nxp_bloc/mediators/di.dart' show Http  ;
+import 'package:nxp_bloc/consts/server.dart';
+import 'package:common/common.dart' show ELevel, FN, TwoDBytes, guard ;
+import 'package:nxp_bloc/mediators/sketch/configs.dart';
+import 'package:path/path.dart' as Path;
+import 'package:nxp_bloc/consts/messages.dart';
+import 'package:nxp_bloc/mediators/controllers/imagejournal_states.dart';
+
+const _OK = "ok";
+
+
+
+/*
+*
+*
+*           B l o C    -    S T A T E    M E D I A T O R
+*
+*
+* */
+class IJState {
+   /// --------------------------------------------------------------
+   ///  general editor's states
+   ///  [processing] indicating states of current processing thread
+   ///         - onIdle, onLoad, onSave, onUpload
+   ///
+   static BgProc get processing              => AppState.processing;
+   static void   set processing(BgProc v)    => AppState.processing = v;
+   static String get state_message           => AppState.state_message;
+   static void   set state_message(String v) => AppState.state_message = v;
+   static int    get progress => AppState.progress;
+
+   static String file_path;
+   static String title;
+   static String summary;
+   static String conclusion;
+   static bool changed;
+
+   static int current_id;
+   static List<DeviceModel> device_data;
+   static List<IJOptionModel> option_data;
+   static Map<int, BaseIJState> states = {};
+
+   static IJBloC bloC;
+
+   /// ---------------------------------------------------------------
+   ///  indexer for database
+   ///
+   ///  [imagejournal_id] id represents for current image journal. Null for
+   ///                    creating new image journal or performing update if
+   ///                    this id had been set.
+   ///  [device_id] id represent for the device id.
+   ///  [pagenum]   indicating page number also for database queries
+   ///  ---------------------------------------------------------------
+   static int pagenum;
+
+   // update via response
+   static int imagejournal_id;
+   static int device_id;
+
+   // properties
+
+
+   static Function(int, int) onLoadProgressOutput = (send, total) {
+      print(progress);
+   };
+
+   static Future<List<DeviceModel>>
+   readDevices() async {
+      const pth = '/device';
+      final res = await Http().dioGet(pth, isCached: true);
+      final body = res.statusCode == 200
+                   ? List<Map<String, dynamic>>.from(res.data as List)
+                   : List<Map<String, dynamic>>.from(
+         jsonDecode(await UserState.manager.file(IJDevBloC.jsonPath).readAsync()) as List);
+
+      // dump to disk
+      if (res.statusCode == 200)
+         await UserState.manager.file(IJDevBloC.jsonPath)
+            .writeAsync(jsonEncode(body));
+
+      return device_data = body.map((data) => DeviceModel.from(data)).toList();
+   }
+
+   static Future<List<IJOptionModel>>
+   readOptions() async {
+      const pth = '/descoption';
+      // note: query by page not implemented yet
+      final res = await Http().dioGet(
+         pth,
+         qparam: {'pagenum': -1, 'perpage': -1},
+         isCached: true
+      );
+
+      // dump to disk
+      final body = res.statusCode == 200
+                   ? List<Map<String, dynamic>>.from(res.data as List)
+                   : List<Map<String, dynamic>>.from(
+         jsonDecode(await UserState.manager.file(IJOptBloC.jsonPath).readAsync()) as List);
+
+      if (res.statusCode == 200)
+         await UserState.manager.file(IJOptBloC.jsonPath)
+            .writeAsync(jsonEncode(body));
+
+      return option_data = body.map((data) => IJOptionModel.from(data)).toList();
+   }
+
+   static bool
+   isStateCanSave(BaseIJState state) {
+      return state is IJStateAdd
+             //         || state is IJStateDefault
+             || state is IJStateLoadImage
+             || state is IJStateLoadImageFinished;
+   }
+
+   static BaseIJState
+   newJournal(IJNewSheetEvent event) {
+      readDevices().then((data) {
+         device_id ??= device_data.first?.id ?? 1;
+      });
+      readOptions();
+      final result = saveState(IJStateNewSheet());
+      return result;
+   }
+
+   static BaseIJState
+   saveState(BaseIJState state) {
+      /*if (state.rec_id == null)
+         throw Exception('rec_id should not be null'); */
+      if (isStateCanSave(state)) {
+         states[state.rec_id] = state;
+      }
+      return state;
+   }
+
+   static BaseIJState
+   loadImage(IJLoadImageEvent event) {
+      final rec_id = event.rec_id,
+         path = event.file_path,
+         image = event.image;
+      final state = states[rec_id];
+      final result = saveState(IJStateLoadImage(path, state));
+      startLoadingTimer();
+      guard(() {
+         assert(result.model != null);
+         if (image == null) {
+            if (result.model.isAValidIdentPath(path)) {
+               AppState.bytestotal += ImageModel.getFileSizeByIdent(path);
+            } else {
+               final stat = UserState.manager.file(path).statSync();
+               AppState.bytestotal += stat.size;
+            }
+            result.model.loadImage().then((image) async {
+               assert(image != null);
+               AppState.bytesloaded += result.model.filesize;
+               bloC.onLoadImageFinished(response: image, rec_id: rec_id, message: _OK);
+            }).catchError((e) {
+               AppState.bytesloaded = AppState.bytestotal;
+               bloC.onLoadImageFinished(message: e, rec_id: rec_id);
+            });
+         } else {
+            bloC.onLoadImageFinished(response: image, rec_id: rec_id, message: _OK);
+         }
+      }, 'load image: $path failed',
+         error: 'LoadImageError');
+      return result;
+   }
+
+   static BaseIJState
+   loadImageFinished(IJLoadImageFinishedEvent event) {
+      final rec_id = event.rec_id,
+         message = event.message,
+         image = event.image;
+      return guard<BaseIJState>(() {
+         final state = states[rec_id];
+         final result = saveState(IJStateLoadImageFinished(
+            message == _OK
+            ? _OK
+            : Msg.onLoadImageFailed(message), state, image));
+         return result;
+      }, 'completing load image: $rec_id failed', error: 'ImageLoadCompleteError');
+   }
+
+   static BaseIJState
+   addRecord(IJAddEvent event) {
+      final rec_id = event.rec_id,
+         model = event.model,
+         desc = event.description,
+         id = event.id;
+      final result = saveState(IJStateAdd(rec_id, desc ?? model?.description, id: id));
+      states[rec_id] = result;
+      if (model == null)
+         return result;
+      // 1) preload a resized image
+      // 2) preload a non-resized image
+      result.model = model;
+      bloC.onLoadImage(
+         result.rec_id,
+         path: model.path,
+         image: model.resized_image);
+      return result;
+   }
+
+   static BaseIJState
+   delRecord(IJDelEvent event) {
+      final rec_id = event.rec_id;
+      final state = states[rec_id];
+      if (IJState.current_id == state.rec_id) {
+         IJState.current_id = null;
+      }
+      final result = saveState(IJStateDel(state));
+      states.remove(state.rec_id);
+      return result;
+   }
+
+   static Future<List<String>>
+   filterExistingIMFromDB(List<ImageModel> models) async {
+      const JSON = JsonCodec();
+      final idents = JSON.encode(models.map((m) => m.ident).toList());
+      final request_url = ROUTE.imagejournal
+         .toString()
+         .split(".")
+         .last;
+
+      final existing_imageRecords =
+      await Http().get(request_url, qparam: {'idents': idents})
+         .then((response) {
+         return jsonDecode(response.body);
+      }) as List;
+      return List<String>.from(existing_imageRecords);
+   }
+
+   static Future <ImageJournalModel>
+   genJournalModel({ bool write = false, bool forUpload = false }) async {
+      final completer = Completer<ImageJournalModel>();
+      final json = ImageJournalModel(
+         title: title, summary: summary, conclusion: conclusion,
+         imagejournal_id: imagejournal_id, device_id: device_id
+      );
+
+      await json.addRecords(states.values.toList(), forUpload: forUpload);
+      if (write == true) {
+         // dumpImages into disk
+         states.values.forEach((BaseIJState state) {
+            AppState.bytestotal += state?.model?.filesize ?? 0;
+            state.model.dumpImage().then((f) {
+               AppState.bytesloaded += state?.model?.filesize ?? 0;
+            });
+         });
+      }
+
+      final List<String> existing_im = await filterExistingIMFromDB(
+         states.values.map((s) => s.model).toList());
+
+      // remove resized image
+      final recs = json.recs;
+      recs.forEach((rec) {
+         if (existing_im.contains(rec['ident'])) {
+            rec.remove('resized_image');
+         }
+      });
+
+      if (write == true) {
+         final json_tobe_saved = json.asMap();
+         await UserState.manager.file(file_path).writeAsync(jsonEncode(json_tobe_saved)).then((file) {
+            print('save complte');
+            completer.complete(json);
+            bloC.onSaveFinished(file: file, message: _OK);
+         }).catchError((e) {
+            print('save failed');
+            completer.complete(json);
+            bloC.onSaveFinished(message: e);
+         });
+         return completer.future;
+      } else {
+         return Future.value(json);
+      }
+   }
+
+   static BaseIJState
+   saveToDisk(IJSaveEvent event) {
+      // if event.file_path is null, a generated path would be provided
+      file_path = getFilePath(event.file_path);
+      final result = saveState(IJStateSave(file_path, bloC));
+      if (changed == false)
+         return result;
+      startLoadingTimer();
+      genJournalModel(write: true);
+      return result;
+   }
+
+   static BaseIJState
+   saveFinished(IJSaveFinishedEvent event) {
+      final message = event.message;
+      final result = saveState(IJStateSaveFinished(
+         message == _OK
+         ? _OK
+         : Msg.onSavingFailed, bloC));
+      return result;
+   }
+
+   static BaseIJState
+   upload() {
+      final path = ROUTE.imagejournal.toString().split('.').last;
+      final result = saveState(IJStateUpload(bloC));
+      startLoadingTimer();
+      genJournalModel(write: false, forUpload: true).then((data) async {
+         final formData = data.asMultipartForm();
+         final fields = formData.fields;
+         final files = formData.files.where((f) => f != null);
+         final raw_list = [utf8.encode(jsonEncode(fields))]
+            ..addAll(files.map((f) => f.bytes));
+         final binary_data = TwoDBytes(raw_list);
+         await Http().dioMultiPost(
+            path, binary_data: binary_data,
+            onSend: (int send, int total) {
+               AppState.bytesloaded = send;
+               AppState.bytestotal = total;
+               IJState.processing = BgProc.onUpload;
+               onLoadProgressOutput(AppState.bytesloaded, AppState.bytestotal);
+            }).then((response) {
+            Http().log('respones:', ELevel.info);
+            Http().log('${FN.stringPrettier(response.data)}', ELevel.warning);
+            bloC.onUploadFinished(response: response, message: _OK);
+         }).catchError((e) {
+            Http().log('${StackTrace.fromString(e.toString())}', ELevel.error);
+            bloC.onUploadFinished(message: e);
+         });
+      });
+      return result;
+   }
+
+   static BaseIJState
+   uploadFinished(IJUploadFinishedEvent event) {
+      final message = event.message;
+      final response = event.response;
+      final result = saveState(IJStateUploadFinished(
+         message == _OK
+         ? _OK
+         : Msg.onUploadFailed(message), bloC));
+      _updateStatesByResponse(response);
+      return result;
+   }
+
+   static String
+   getFilePath([String path]) {
+      return _jsonPath(
+         path: path,
+         imagejournal_id: imagejournal_id,
+         device_id: device_id
+      );
+   }
+
+   static void _updateStatesByResponse(Response response) {
+      final responseBody = response.data as Map<String, dynamic>;
+      final ids = responseBody['content']['image_records'] as List<int>;
+      device_id = responseBody['content']['device_id'] as int;
+      imagejournal_id = responseBody['id'] as int;
+      file_path = getFilePath();
+   }
+
+   static void _onLoadProgress(Timer t) {
+      if (IJState.processing == BgProc.onIdle)
+         t.cancel();
+      onLoadProgressOutput(AppState.bytesloaded, AppState.bytestotal);
+   }
+
+   static BaseIJState
+   selectDevice(IJSelectDevEvent event) {
+      final result = saveState(IJStateSelectDevice(event.id, bloC.currentState));
+      if (device_id != event.device_id) {
+         device_id = event.device_id;
+         bloC.onNewSheet();
+      }
+      return result;
+   }
+
+   static BaseIJState
+   queryIJByDevice(IJQueryDevEvent event) {
+
+   }
+
+   static BaseIJState
+   loadFromDisk(IJLoadEvent event) {
+      file_path = event.file_path;
+      final result = saveState(IJStateLoad(event.file_path, bloC));
+      guard(() {
+         startLoadingTimer();
+         final json_text = UserState.manager.file(file_path).readSync();
+         final json = jsonDecode(json_text);
+         final recs = json["recs"] as List;
+         final response = <int, ImageModel>{};
+
+         var img_loaded = 0;
+         for (var i = 0; i < recs.length; ++i) {
+            final rec = recs[i] as Map<String, dynamic>;
+            response[rec["rec_id"] as int] = ImageModel.from(rec, (image) {
+               img_loaded ++;
+               AppState.bytesloaded += response[rec["rec_id"] as int].filesize;
+               if (img_loaded == recs.length)
+                  bloC.onLoadFinished(response: response, message: _OK, file_path: file_path);
+            }, (error) {
+               bloC.onLoadFinished(message: error, file_path: file_path);
+            });
+            final filesize = ImageModel.getFileSizeByIdent(rec['ident'] as String);
+            AppState.bytestotal += filesize;
+         }
+      },
+         'while loading json',
+         error: 'LoadJsonError'
+      );
+      return result;
+   }
+
+   static void startLoadingTimer() {
+      if (AppState.loadingTimer != null)
+         AppState.loadingTimer.cancel();
+      AppState.loadingTimer = Timer.periodic(Duration(milliseconds: 100), _onLoadProgress);
+   }
+
+   static BaseIJState
+   loadFinished(IJLoadFinishedEvent event) {
+      return guard<BaseIJState>(() {
+         final result = saveState(IJStateLoadFinished(
+            event.message == _OK
+            ? _OK
+            : Msg.onLoadJournalFailed(event.message),
+            bloC));
+         IJState.file_path = file_path;
+         states = {};
+         event.content.forEach((rec_id, model) {
+            states[rec_id] = IJState.addRecord(IJAddEvent(rec_id: rec_id, model: model));
+         });
+         return result;
+      },
+         'completing json loading failed',
+         error: 'ComopleteJsonError');
+   }
+}
+/*
+*
+*
+*
+*              B l o C ( Business logic )
+*
+*
+*
+* */
+
+final TEMP_PATH_PTN = RegExp('[D][0-9]+-[J][0-9]+-');
+
+class IJBloC extends Bloc<IJEvents, BaseIJState> {
+   IJEvents last_event;
+
+   static bool isDbPath(String path) {
+      return path.startsWith(TEMP_PATH_PTN);
+   }
+
+
+
+   @override
+   BaseIJState get initialState {
+      IJState.bloC = this;
+      return IJStateDefault();
+   }
+
+   /*
+     >| transform
+      |
+     >| yield
+      |IJStateLoadImageFinished
+     >| transition
+   */
+   @override
+   void onTransition(Transition<IJEvents, BaseIJState> transition) {
+      super.onTransition(transition);
+   }
+
+   bool isDuplicatedEvent(IJEvents event) {
+      final ret = last_event != null &&
+                  last_event.rec_id == event.rec_id &&
+                  last_event.event == event.event;
+      if (ret == true)
+         throw Exception('duddddddddddd');
+      print('pass, $event');
+      return ret;
+   }
+
+   @override
+   Stream<BaseIJState> mapEventToState(BaseIJState currentState, IJEvents event) async* {
+      //if (isDuplicatedEvent(event)) return;
+      last_event = event;
+      BaseIJState new_state;
+
+      switch (event.event) {
+         case EIJEvents.newsheet:
+            new_state = IJState.newJournal(event as IJNewSheetEvent);
+            break;
+         case EIJEvents.add:
+            new_state = IJState.addRecord(event as IJAddEvent);
+            break;
+         case EIJEvents.del:
+            new_state = IJState.delRecord(event as IJDelEvent) as IJStateDel;
+            break;
+         case EIJEvents.load:
+            new_state = IJState.loadFromDisk(event as IJLoadEvent) as IJStateLoad;
+            break;
+         case EIJEvents.save:
+            new_state = IJState.saveToDisk(event as IJSaveEvent) as IJStateSave;
+            break;
+         case EIJEvents.upload:
+            new_state = IJState.upload() as IJStateUpload;
+            break;
+         case EIJEvents.loadImage:
+            new_state = IJState.loadImage(event as IJLoadImageEvent) as IJStateLoadImage;
+            break;
+         case EIJEvents.loadImageFinished:
+            new_state = IJState.loadImageFinished(event as IJLoadImageFinishedEvent) as IJStateLoadImageFinished;
+            break;
+         case EIJEvents.loadFinished:
+            new_state = IJState.loadFinished(event as IJLoadFinishedEvent) as IJStateLoadFinished;
+            break;
+         case EIJEvents.saveFinished:
+            new_state = IJState.saveFinished(event as IJSaveFinishedEvent) as IJStateSaveFinished;
+            break;
+         case EIJEvents.uploadFinished:
+            new_state = IJState.uploadFinished(event as IJUploadFinishedEvent) as IJStateUploadFinished;
+            break;
+         case EIJEvents.selectDevice:
+            new_state = IJState.selectDevice(event as IJSelectDevEvent) as IJStateSelectDevice;
+            break;
+         case EIJEvents.setState:
+            new_state = IJSetState();
+            break;
+         case EIJEvents.browse:
+            new_state = IJBrowseState();
+            break;
+         default:
+            throw Exception('Uncuahgt exception');
+      }
+      print('yield state: ${new_state}');
+      yield new_state;
+   }
+
+   void onNewSheet() {
+      dispatch(IJNewSheetEvent());
+   }
+
+   void onAdd(int rec_id, String description, {ImageModel model, int id}) {
+      dispatch(IJAddEvent(rec_id: rec_id, description: description, model: model, id: id));
+   }
+
+   void onDel(int rec_id) {
+      dispatch(IJDelEvent(rec_id: rec_id));
+   }
+
+   void onSave([String name]) {
+      dispatch(IJSaveEvent(file_path: name));
+   }
+
+   void onSaveFinished({StoreInf file, Object message}) {
+      dispatch(IJSaveFinishedEvent(file: file, message: message.toString()));
+   }
+
+   void onUpload() {
+      dispatch(IJUploadEvent());
+   }
+
+   void onUploadFinished({Response response, Object message}) {
+      dispatch(IJUploadFinishedEvent(message: message.toString(), response: response));
+   }
+
+   void onLoad(String name) {
+      dispatch(IJLoadEvent(file_path: name));
+   }
+
+   void onLoadFinished({Map<int, ImageModel> response, Object message, String file_path}) {
+      dispatch(IJLoadFinishedEvent(
+         message: message.toString(),
+         file_path: file_path, content: response));
+   }
+
+   void onLoadImage(int rec_id, {String path, Image image}) {
+      dispatch(IJLoadImageEvent(rec_id: rec_id, file_path: path, image: image));
+   }
+
+   void onLoadImageFinished({Image response, Object message, int rec_id}) {
+      dispatch(IJLoadImageFinishedEvent(rec_id: rec_id, image: response,
+         message: message.toString()));
+   }
+
+   void onSelectDevice(int device_id) {
+      dispatch(IJSelectDevEvent(device_id));
+   }
+
+   void onSetState(){
+      dispatch(IJSetStateEvent());
+   }
+
+   void onBrowse(){
+      dispatch(IJBrowseEvent());
+   }
+
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+String _jsonPath({String path, int imagejournal_id, int device_id, bool reversion = false}) {
+   // reversion
+   if (path != null && reversion == true)
+      return _versionPath(path, ij_id: imagejournal_id, device_id: device_id);
+   // save to a specific path or for overriding existing file;
+   if (path != null) {
+      return path;
+   }
+   // save by ids mapping from description_id and device_id
+   final time = DateTime
+      .now()
+      .millisecondsSinceEpoch;
+   return 'D${device_id ?? ""}-J${imagejournal_id ?? ""}-$time-V1.json';
+}
+
+String _versionPath(String path, {int device_id, int ij_id}) {
+   final dir = Path.dirname(path);
+   final file_vname = Path.basenameWithoutExtension(path);
+
+   if (!file_vname
+      .split('-')
+      .last
+      .startsWith(RegExp('[V][0-9]+')))
+      throw Exception('Uncaught Exception, invalid json filename');
+
+   final file_name = file_vname.substring(0, file_vname.lastIndexOf('-'));
+   final version = int.parse(file_vname.substring(file_vname.lastIndexOf('-') + 2));
+   if (UserState.manager.file(path).existsSync()) {
+      return Path.join(dir, '${file_name}-V${version + 1}');
+   }
+   return path;
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+import 'dart:io';
+import 'dart:typed_data';
+import 'dart:async';
+import 'dart:convert';
+
+import 'package:PatrolParser/PatrolParser.dart';
+import 'package:common/common.dart' show FN, guard;
+import 'package:dio/dio.dart';
+import 'package:exif/exif.dart';
+import 'package:nxp_bloc/consts/http.dart';
+import 'package:nxp_bloc/mediators/controllers/imagejournal_states.dart';
+import 'package:nxp_bloc/mediators/controllers/user_bloc.dart';
+import 'package:nxp_bloc/mediators/models/validator_model.dart';
+import 'package:nxp_bloc/mediators/sketch/configs.dart';
+import 'package:path/path.dart' as Path;
+import 'package:image/image.dart';
+import 'package:uuid/uuid.dart';
+import 'package:nxp_bloc/mediators/di.dart' show Injection, MultipartForm;
+import 'package:PatrolParser/PatrolParser.dart' show PatrolRecord;
+
+
+final uuid = Uuid();
+final _cfg = Injection.injector.get<ConfigInf>();
+final RESIZED_PATH = _cfg.assets.resized_path.replaceAll(r'/', Platform.pathSeparator);
+// for matching V-2019-03-11154037.000----86573-V-2019-03-11131705.0
+final _STARTPTN = RegExp('[VH]-[0-9]{4}-[0-9]{2}-[0-9]{8}\.000');
+
+void filterNullInMap(Map<String, dynamic> ret) {
+   ret.keys.toList().forEach((k) {
+      if (ret[k] == null)
+         ret.remove(k);
+   });
+}
+
+
+abstract class MaintanenceInf implements SerializableModel {
+   int id;
+   DeviceModel device;
+   PatrolSetup setup;
+   List<int> tempRange;
+   List<double> voltageRange;
+   List<int> pressureRange;
+   List<int> injectionRange;
+   List<ValidationInf> validators;
+}
+
+class MaintenanceModel extends ModelValidator implements MaintanenceInf {
+   @override DeviceModel device;
+   @override int id;
+   @override List<int> injectionRange;
+   @override List<int> pressureRange;
+   @override PatrolSetup setup;
+   @override List<int> tempRange;
+   @override List<double> voltageRange;
+   @override List<ValidationInf> validators = [
+      UniqueValiation('id', 'id')
+   ];
+
+   MaintenanceModel({this.device, this.id, this.injectionRange,
+                       this.pressureRange, this.setup, this.tempRange, this.voltageRange});
+
+   MaintenanceModel.create(DeviceModel dev){
+      injectionRange = [0,0];
+      pressureRange = [0, 0];
+      setup = PatrolSetup.Setup1;
+      tempRange = [0, 0];
+      voltageRange = [0,0];
+      device = dev;
+   }
+
+   MaintenanceModel.clone(MaintenanceModel m){
+      id = m.id;
+      device = m.device;
+      injectionRange = List.from(m.injectionRange);
+      pressureRange = List.from(m.pressureRange);
+      tempRange = List.from(m.tempRange);
+      voltageRange = List.from(m.voltageRange);
+      setup = m.setup;
+   }
+
+   MaintenanceModel.from(Map<String, dynamic> map, DeviceModel dev){
+      guard(() {
+         id = map['id'] as int; //parseOrNull(map['id'] as String);
+         device = dev;
+         injectionRange = List<int>.from(map['injectionRange'] as List);
+         pressureRange = List<int>.from(map['pressureRange'] as List);
+         tempRange = List<int>.from(map['tempRange'] as List);
+         voltageRange = List<double>.from(map['voltageRange'] as List);
+         final s = map['setup'] as String;
+         setup = PatrolSetup.values.firstWhere((v) => v.toString().endsWith(s));
+      },
+         'serializing MaintenanceModel failed, map:\n '
+            '${FN.stringPrettier(map)}', error: 'SerializeError');
+   }
+
+   @override Map<String, dynamic>
+   asMap({bool considerValidation = false}) {
+      final result =  {
+         'id': id,
+         'device': device.id,
+         'setup': setup.toString(),
+         'tempRange': tempRange,
+         'voltageRange': voltageRange,
+         'pressureRange': pressureRange,
+         'injectionRange': injectionRange
+      };
+      if (considerValidation && hasValidationErrors){
+         writeValidation(result);
+      }
+      return result;
+   }
+}
+
+abstract class DeviceInf implements SerializableModel {
+   int id;
+   String name;
+   List<int> device_responsers;
+   MaintenanceModel maintenance;
+   List<ValidationInf> validators;
+   DateTime created;
+   DateTime modified;
+}
+
+class PatrolRecordModel extends ModelValidator implements SerializableModel{
+   int id;
+   int user_id;
+   DateTime  get date => patrol.date;
+   Uint8List get machine_id=> patrol.id   ;
+   Uint8List get setup=> patrol.setup   ;
+   Uint8List get hh   => patrol.hh   ;
+   Uint8List get mm   => patrol.mm   ;
+   Uint8List get ss   => patrol.ss   ;
+   Uint8List get type1=> patrol.type1   ;
+   Uint8List get type2=> patrol.type2   ;
+   Uint8List get inject1=> patrol.inject1 ;
+   Uint8List get inject2=> patrol.inject2 ;
+   Uint8List get patrol1=> patrol.patrol1 ;
+   Uint8List get patrol2=> patrol.patrol2 ;
+   Uint8List get temperature=> patrol.temperature;
+   Uint8List get voltage    => patrol.voltage;
+   Uint8List get pressure1  => patrol.pressure1;
+   Uint8List get pressure2  => patrol.pressure2;
+   Uint8List get status1 => patrol.status1;
+   Uint8List get status2 => patrol.status2;
+   Uint8List get status3 => patrol.status3;
+   Uint8List get status4 => patrol.status4;
+   Uint8List get rest    => patrol.rest;
+   PatrolRecord patrol;
+
+   @override List<ValidationInf> validators = [
+      DateValidation('date', 'date'),
+      RangeValidation('setup', 'setup', [0, 12]),
+      RangeValidation('hh', 'hh', [0, 23]),
+      RangeValidation('mm', 'mm', [0, 59]),
+      RangeValidation('ss', 'ss', [0, 59]),
+   ];
+
+   PatrolRecordModel(this.patrol, this.user_id);
+
+   PatrolRecordModel.fromMap(Map<String,dynamic> body){
+      final map = Map<String,dynamic>.from(body);
+      id = map['id'] as int;
+      final machine_id = List<int>.from(map['machine_id'] as List);
+      map['id']  = machine_id;
+      user_id     = map['user_id'] as int;
+      patrol      = PatrolRecord.fromJson(map);
+   }
+
+   PatrolRecordModel.fromByteString(String text){
+      if (PatrolRecord.isValidByteString(text)) {
+         // already encoded, do nothing
+         patrol = PatrolRecord.fromByteString(text);
+         id = null;
+      }else{
+         throw Exception('Not a valid byte string');
+      }
+   }
+
+   @override Map<String, dynamic>
+   asMap({bool considerValidation = false}) {
+      final result = patrol.toJson();
+      result['machine_id'] = result['id'];
+      result['id'] = id;
+      result['user_id'] = user_id ?? 1;
+      result['device_id'] = [(result['type2'][0] as int) + 1];
+      if(considerValidation && hasValidationErrors) {
+         writeValidation(result);
+      }
+      return result;
+   }
+
+   void setKeyVal<T>(String key, T value){
+      switch(key){
+         case 'id':
+            id = value as int;
+            break;
+         case 'machine_id':
+            patrol.id = Uint8List(value as int);
+            break;
+         case 'type':
+            if (value is int)
+               patrol.type2 = Uint8List(value);
+            else if (value is List){
+               patrol.type1 = Uint8List(value[0] as int);
+               patrol.type2 = Uint8List(value[1] as int);
+            }
+            break;
+         case 'date':
+            patrol.date = DateTime.parse(value as String).toUtc();
+            break;
+         case 'hh':
+            patrol.hh = Uint8List(value as int);
+            break;
+         case 'mm':
+            patrol.mm = Uint8List(value as int);
+            break;
+         case 'ss':
+            patrol.ss = Uint8List(value as int);
+            break;
+         case 'setup':
+            patrol.setup = Uint8List(value as int);
+            break;
+         default:
+            throw Exception('Uncaught key: $key');
+      }
+   }
+}
+
+abstract class IJOptionInf implements SerializableModel {
+   int id;
+   String name;
+   String description;
+   bool certificated;
+   List<int> imagejournals;
+   List<ValidationInf> validators;
+   DateTime created;
+   DateTime modified;
+}
+
+class DeviceModel extends ModelValidator implements DeviceInf {
+   @override int id;
+   @override DateTime created;
+   @override DateTime modified;
+   @override String name;
+   @override List<int> device_responsers = [1];
+   @override MaintenanceModel maintenance;
+   @override List<ValidationInf> validators = [
+      UniqueValiation('id', 'id'), UniqueValiation('name', 'name')
+   ];
+
+   DeviceModel(this.name);
+
+   DeviceModel.clone(DeviceModel m){
+      id = m.id;
+      name = m.name;
+      maintenance = MaintenanceModel.clone(m.maintenance);
+      device_responsers = List.from(m.device_responsers);
+   }
+
+   DeviceModel.create(){
+      name = 'TP_';
+      created = modified = DateTime.now().toUtc();
+      maintenance = MaintenanceModel.create(this);
+   }
+
+   DeviceModel.from(Map<String, dynamic> map){
+      guard(() {
+         id = map['id'] as int; //parseOrNull(map['id'] as String);
+         name = map['name'] as String;
+         if (map['maintenance'] != null)
+            maintenance = MaintenanceModel.from(
+               map['maintenance'] as Map<String, dynamic>,
+               this
+            );
+         if (map['device_responsers'] != null)
+            device_responsers = List<int>.from(map['device_responsers'] as List);
+         if (map['created'] != null){
+            created = DateTime.parse(map['created'] as String).toUtc();
+         }
+         if (map['modified'] != null){
+            modified = DateTime.parse(map['modified'] as String).toUtc();
+         }
+      },
+         'serializing device failed, map:\n '
+         '${FN.stringPrettier(map)}', error: 'SerializeError');
+   }
+   update(DeviceModel m){
+      id = m.id;
+      name = m.name;
+      maintenance = MaintenanceModel.clone(m.maintenance);
+      device_responsers = List.from(m.device_responsers);
+   }
+   Map<String, dynamic> asMap({bool considerValidation = false}) {
+      final result = {
+         'id': id,
+         'name': name,
+         'device_responsers': device_responsers,
+         'maintenance': maintenance?.asMap(),
+         'created': created?.toUtc()?.toIso8601String()
+            ?? DateTime.now().toUtc().toIso8601String(),
+         'modified': modified?.toUtc()?.toIso8601String()
+            ?? DateTime.now().toUtc().toIso8601String(),
+      };
+      if (considerValidation && hasValidationErrors){
+         writeValidation(result);
+      }
+      return result;
+   }
+
+}
+
+class IJOptionModel extends ModelValidator implements IJOptionInf {
+   @override DateTime created;
+   @override DateTime modified;
+   @override int id;
+   @override String name;
+   @override String description;
+   @override bool certificated;
+   @override List<int> imagejournals;
+   @override List<ValidationInf> validators= [
+      UniqueValiation('id', 'id'),
+      SolidUniqueValiation('name', 'name')
+   ];
+
+   IJOptionModel(this.name, this.description, {this.id, this.certificated = false});
+
+   IJOptionModel.clone(IJOptionModel m){
+      id = m.id;
+      name = m.name;
+      description = m.description;
+      certificated = m.certificated;
+      imagejournals = m.imagejournals;
+   }
+
+   IJOptionModel.from(Map<String, dynamic> map){
+      guard(() {
+         id = map['id'] as int;
+         name = map['name'] as String;
+         description = map['description'] as String;
+         certificated = map['certificated'] as bool;
+         if (map[' '] != null) {
+            imagejournals = List<int>.from(map[' '] as List);
+         }
+         if (map['created'] != null){
+            created = DateTime.parse(map['created'] as String).toUtc();
+         }
+         if (map['modified'] != null){
+            modified = DateTime.parse(map['modified'] as String).toUtc();
+         }
+      },
+         'serializing IJOptionModel failed, map:\n '
+            '${FN.stringPrettier(map)}', error: 'SerializeError');
+   }
+
+   @override
+  Map<String, dynamic> asMap({bool considerValidation = false}) {
+      final result = {
+         'id': id,
+         'name': name,
+         'description': description,
+         'certificated': certificated,
+         ' ': imagejournals,
+         'created': created?.toUtc()?.toIso8601String()
+            ?? DateTime.now().toUtc().toIso8601String(),
+         'modified': modified?.toUtc()?.toIso8601String()
+            ?? DateTime.now().toUtc().toIso8601String()
+      };
+      if (considerValidation && hasValidationErrors){
+         writeValidation(result);
+      }
+      return result;
+   }
+}
+
+abstract class ImageJournalInf implements SerializableModel {
+   int imagejournal_id;
+   int device_id;
+   DateTime created;
+   DateTime modified;
+   String title;
+   String summary;
+   String conclusion;
+   Map<String, UploadFileInfo> files;
+   List<Map<String, dynamic>> recs;
+
+   Map<String, dynamic> asMap();
+}
+
+class ImageJournalModel implements ImageJournalInf {
+   @override int device_id;
+   @override int imagejournal_id;
+   @override DateTime created;
+   @override DateTime modified;
+   @override String conclusion;
+   @override String summary;
+   @override String title;
+   @override Map<String, UploadFileInfo> files;
+   @override List<Map<String, dynamic>> recs;
+
+   @override
+   Map<String, dynamic> asMap() {
+      final ret = {
+         'id': imagejournal_id,
+         'title': title ?? "",
+         'summary': summary ?? "",
+         'conclusion': conclusion ?? "",
+         'device_id': device_id ?? 1,
+         'created': created?.toIso8601String() ?? DateTime.now().toUtc().toIso8601String(),
+         'modified': modified?.toIso8601String() ?? DateTime.now().toUtc().toIso8601String(),
+         'recs': recs.map((Map<String, dynamic> rec) {
+            final ret = <String, dynamic>{};
+            rec.forEach((k, v) {
+               ret[k] = v ?? "";
+            });
+            ret.remove('resized_image');
+            return ret;
+         }).toList()
+      };
+      filterNullInMap(ret);
+      return ret;
+   }
+
+   MultipartForm asMultipartForm() {
+      final files = <UploadFileInfo>[];
+      final fields = <String, String>{
+         'id': imagejournal_id?.toString(),
+         'title': title ?? "",
+         'summary': summary ?? "",
+         'conclusion': conclusion ?? "",
+         'device_id': device_id?.toString() ?? "1",
+         'created': created?.toIso8601String() ?? DateTime.now().toUtc().toIso8601String(),
+         'modified': modified?.toIso8601String() ?? DateTime.now().toUtc().toIso8601String(),
+         'rec_num': recs.length.toString(),
+      };
+      filterNullInMap(fields);
+
+      for (var i = 0; i < recs.length; ++i) {
+         var rec = recs[i];
+         rec.forEach((k, v) {
+            final field_name = 'rec${i}_$k';
+            if (k == 'resized_image') {
+               final image_file = v != null
+                                  ? UploadFileInfo.fromBytes((v as Image).getBytes(), field_name)
+                                  : null;
+               files.add(image_file);
+            } else {
+               fields[field_name] = (v ?? "").toString();
+            }
+         });
+      }
+      return MultipartForm.from(
+         fields: fields,
+         files: files
+      );
+   }
+
+   Future<List<Map<String, dynamic>>>
+   addRecords(List<BaseIJState> records, {bool forUpload = false}) async {
+      recs ??= [];
+      for (var i = 0; i < records.length; ++i) {
+         var state = records[i];
+         await state.model.init();
+         final model = state.model;
+         final ret = model.asMap(forUpload: forUpload);
+         final rec_id = records
+            .firstWhere((v) => v.model == model)
+            .rec_id;
+         // if (forUpload)
+         // ret["resized_image"] = null;
+         ret["rec_id"] = rec_id;
+         if (rec_id == null)
+            throw Exception('rec_id should not be null');
+         recs.add(ret);
+      }
+      return recs;
+   }
+
+   readFromJson(Map<String, dynamic> rawdata) {
+
+   }
+
+   ImageJournalModel({this.title, this.conclusion, this.summary, this.recs, this.created, this.imagejournal_id, this.device_id});
+}
+
+
+
+abstract class ImageModelInf implements SerializableModel {
+   String description;
+   String path;
+   String ident;
+   List<int> image_size;
+   Image _resized_image;
+   String image_type;
+
+   int resize;
+
+   Map<String, dynamic> asMap();
+
+   void init();
+}
+
+
+//
+// rewrite following into BLoC pattern
+class ImageModel implements ImageModelInf {
+   static int getFileSizeByIdent(String ident) {
+      final segs = ident.split('-');
+      if (segs.length > 7)
+         return int.parse(segs[7]);
+      return -1;
+   }
+
+   int imagejournal_id;
+   int rec_id;
+   String description;
+   String path;
+   String _ident;
+   String image_type;
+   List<int> image_size;
+   Image _resized_image;
+
+   int resize;
+   int filesize;
+   int _orig_size;
+   String _orig_name;
+
+   String get orig_name {
+      if (_orig_name != null) return _orig_name;
+      return _orig_name = Path.basename(path);
+   }
+
+   String get ident => _ident;
+
+   void set ident(String v) {
+      _ident = v;
+      final size = getFileSizeByIdent(v);
+      if (size != -1)
+         filesize = int.parse(v.split('-')[7]);
+   }
+
+   Image get resized_image => _resized_image;
+
+   void set resized_image(Image v) {
+      if (v == null) {
+         image_size = null;
+         _resized_image = null;
+         return;
+      }
+      image_size = [v.width, v.height];
+      _resized_image = v;
+   }
+
+   ImageModel(this.description, this.path, this.resize);
+
+   ImageModel.from(Map<String, dynamic> data, then(Image image), error(e)){
+      imagejournal_id = data['id'] as int;
+      rec_id = data['rec_id'] as int;
+      description = data['description'] as String;
+      ident = data['ident'] as String;
+      path = data['path'] as String;
+      image_type = path
+         .split('.')
+         .last;
+      resize = _cfg.assets.size;
+      if (data.containsKey('image_size'))
+         image_size = List<int>.from(data['image_size'] as List);
+      if (ident == null || path == null)
+         throw Exception('Uncaught Exception');
+      path = getImagePath();
+      loadImage().then(then).catchError(error);
+   }
+
+   String getImagePath() {
+      if (isResizedPath) return path;
+      if (ident == null)
+         return path;
+      return Path.join(RESIZED_PATH, ident);
+   }
+
+   Future<StoreInf> dumpImage() {
+      if (resized_image == null) return null;
+      final pth = getImagePath();
+      final file = UserState.manager.file(pth);
+      final completer = Completer<StoreInf>();
+      if (file.existsSync())
+         return Future.value(file);
+      //_resizeImage(resized_image);
+      file.writeAsBytes(encodeJpg(resized_image, quality: 70)).then(completer.complete);
+      return completer.future;
+   }
+
+   bool isAValidIdentPath(String pth) {
+      return pth.startsWith(_STARTPTN);
+   }
+
+   bool isHorizontal(Image img) => img.width > img.height;
+
+   bool isVertical(Image img) => !isHorizontal(img);
+
+   bool get isResizedPath {
+      if (path == null) return false;
+      if (path.contains(RESIZED_PATH))
+         return true;
+      return false;
+   }
+
+   // todo:
+   // detect whether loaded image is resized or not
+   Future<Image> loadImage() async {
+      final model = await init();
+      return model.resized_image;
+   }
+
+   Image _resizeImage(Image img) {
+      if (isHorizontal(img) && img.width > resize)
+         return resized_image = copyResize(img, resize);
+      if (isVertical(img) && img.height > resize)
+         return resized_image = copyResize(img, resize);
+      return img;
+   }
+
+   String getStringFromImageContent(Uint8List content) {
+      final size = content.length;
+      final ret = <int>[];
+      final recs = 10;
+      for (var i = 1; i < recs; ++i) {
+         var n = (size * i / (recs - 1)).round() - 1;
+         ret.add(content[n]);
+      }
+      print(ret);
+      return base64Encode(ret).replaceAll(RegExp('[/,+=]+'), '');
+   }
+
+   Image _decodeImage(List<int> rawimage) {
+      Image ret = image_size == null
+                  ? _resizeImage(decodeImage(rawimage))
+                  : Image.fromBytes(image_size[0], image_size[1], rawimage);
+      return ret;
+   }
+
+   Future<ImageModel> init() async {
+      if (ident != null) {
+         if (image_size != null) {
+            resized_image ??= Image.fromBytes(
+               image_size[0], image_size[1],
+               UserState.manager.file(getImagePath()).readAsBytesSync());
+         }
+         if (resized_image != null)
+            return Future.value(this);
+         throw Exception('Uncaught exception');
+      }
+
+      final file = UserState.manager.file(getImagePath());
+      final stat = file.statSync();
+      filesize = stat.size;
+      return await file.readAsBytes().then((image_data) async {
+         return await readExifFromBytes(image_data).then((Map<String, IfdTag> tags) {
+            return guard<ImageModel>(() {
+               resized_image = _decodeImage(image_data);
+               final o = isHorizontal(resized_image) ? "H" : "V";
+               final d = tags["EXIF DateTimeOriginal"]?.toString() ?? stat.modified.toString();
+               final n = tags["EXIF OwnerName"] ?? "";
+               final g = tags["GPS Position"] ?? "";
+               final s = getStringFromImageContent(resized_image.getBytes());
+               image_type = orig_name
+                  .split('.')
+                  .last;
+               _orig_size = image_data.length;
+               //_orig_time = DateTime.parse(d);
+               if (isAValidIdentPath(orig_name)) {
+                  ident = orig_name;
+                  return this;
+               }
+               ident = '$o-$d-$n-$g-$s-$_orig_size-$orig_name.$image_type'.replaceAll(RegExp('[ \(\):]+'), '');
+               return this;
+            },
+               'Errors occurs while resizing and decoding image: $path',
+               error: 'DecodeImageError');
+         });
+      });
+   }
+
+   Map<String, dynamic> asMap({bool convertImage = false, bool forUpload = false}) {
+      final ret =
+      {
+         'id': imagejournal_id,
+         'rec_id': rec_id,
+         //following props present for ImageRecord
+         'ident': ident,
+         'path': path,
+         'image_type': image_type,
+         'description': description,
+         'image_size': image_size,
+         'resized_image': convertImage
+                          ? resized_image?.getBytes()
+                          : resized_image,
+         //following props present for FormData
+         'filename': orig_name,
+         //should provide a resized image instread of a original image
+         /*'image': forUpload
+               ? UploadFileInfo.fromBytes(resized_image.getBytes(), _orig_name)
+               : null*/
+      };
+      filterNullInMap(ret);
+      return ret;
+   }
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

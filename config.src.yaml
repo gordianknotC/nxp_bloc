@@ -1,0 +1,15 @@
+database:
+  host: localhost
+  port: 5432
+  username: dart
+  password: dart
+  databaseName: heroes
+assets:
+  basepath: assets
+  resized_path: assets/resized
+  journal_path: assets/journal
+  size: 768
+app:
+  history: 12
+  clientid: nxp.app.test
+  clientsecret: nxp.app.client.secret
